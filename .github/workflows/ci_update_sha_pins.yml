@@ -1,0 +1,138 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# --------------------------------------------------------------------------
+# Automatically updates reusable workflow SHA pins in consumer workflows
+# after a new org-infra release is published.
+#
+# Triggered by: GitHub Release publication
+# Output: A pull request with updated @<sha> # vX.Y.Z references
+# --------------------------------------------------------------------------
+
+name: Update SHA Pins
+
+on:
+  release:
+    types: [published]
+
+concurrency:
+  group: sha-pin-update
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  update-pins:
+    name: Update Reusable Workflow SHA Pins
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Validate release tag format
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          if [[ ! "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Release tag must match semver format: v<major>.<minor>.<patch>"
+            exit 1
+          fi
+
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Resolve release tag and SHA
+        id: release
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          RELEASE_SHA=$(git rev-parse "${RELEASE_TAG}^{commit}")
+          echo "tag=${RELEASE_TAG}" >> "${GITHUB_OUTPUT}"
+          echo "sha=${RELEASE_SHA}" >> "${GITHUB_OUTPUT}"
+          echo "Resolved ${RELEASE_TAG} -> ${RELEASE_SHA}"
+
+      - name: Update SHA pins in workflow files
+        env:
+          RELEASE_SHA: ${{ steps.release.outputs.sha }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          WORKFLOW_DIR=".github/workflows"
+          FILES=(
+            "${WORKFLOW_DIR}/ci_checks.yml"
+            "${WORKFLOW_DIR}/ci_compliance.yml"
+            "${WORKFLOW_DIR}/ci_crapload.yml"
+            "${WORKFLOW_DIR}/ci_dependencies.yml"
+            "${WORKFLOW_DIR}/ci_scheduled.yml"
+            "${WORKFLOW_DIR}/ci_security.yml"
+            "${WORKFLOW_DIR}/reusable_scheduled.yml"
+          )
+
+          for file in "${FILES[@]}"; do
+            if [[ ! -f "${file}" ]]; then
+              echo "::error::File not found: ${file}"
+              exit 1
+            fi
+            sed -i \
+              "s|\(complytime/org-infra/\.github/workflows/reusable_[^@]*@\)[0-9a-f]\{40\} # v[0-9][^ ]*|\1${RELEASE_SHA} # ${RELEASE_TAG}|g" \
+              "${file}"
+          done
+
+      - name: Verify update count
+        env:
+          RELEASE_SHA: ${{ steps.release.outputs.sha }}
+        run: |
+          EXPECTED=9
+          ACTUAL=$(grep -rc "complytime/org-infra/.github/workflows/reusable_.*@${RELEASE_SHA}" .github/workflows/ || true)
+          echo "Found ${ACTUAL} references pinned to ${RELEASE_SHA}"
+          if [[ "${ACTUAL}" -ne "${EXPECTED}" ]]; then
+            echo "::error::Expected ${EXPECTED} updated references but found ${ACTUAL}"
+            exit 1
+          fi
+
+      - name: Check for changes
+        id: diff
+        run: |
+          if git diff --quiet; then
+            echo "changed=false" >> "${GITHUB_OUTPUT}"
+            echo "No changes detected — SHA pins already match ${RELEASE_TAG}"
+          else
+            echo "changed=true" >> "${GITHUB_OUTPUT}"
+          fi
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+
+      - name: Create pull request
+        if: steps.diff.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          branch: chore/update-sha-pins-${{ steps.release.outputs.tag }}
+          title: "chore: update reusable workflow SHA pins to ${{ steps.release.outputs.tag }}"
+          body: |
+            ## Summary
+
+            Automatically updates all reusable workflow SHA pin references to the
+            [${{ steps.release.outputs.tag }}](https://github.com/${{ github.repository }}/releases/tag/${{ steps.release.outputs.tag }}) release.
+
+            **Release SHA:** `${{ steps.release.outputs.sha }}`
+
+            ### Updated references (9 total)
+
+            | File | Reusable workflow |
+            |------|-------------------|
+            | `ci_checks.yml` | `reusable_ci.yml` |
+            | `ci_compliance.yml` | `reusable_compliance.yml` |
+            | `ci_crapload.yml` | `reusable_crapload_analysis.yml` |
+            | `ci_dependencies.yml` | `reusable_deps_reviewer.yml` |
+            | `ci_dependencies.yml` | `reusable_dependabot_reviewer.yml` |
+            | `ci_scheduled.yml` | `reusable_scheduled.yml` |
+            | `ci_security.yml` | `reusable_vuln_scan.yml` |
+            | `ci_security.yml` | `reusable_security.yml` |
+            | `reusable_scheduled.yml` | `reusable_security.yml` |
+
+            After merging, run the **Sync Org Repositories** workflow to propagate
+            the updated consumer workflows to all downstream repos.
+          commit-message: "chore: update reusable workflow SHA pins to ${{ steps.release.outputs.tag }}"
+          delete-branch: true
