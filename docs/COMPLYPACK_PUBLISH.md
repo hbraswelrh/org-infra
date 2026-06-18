@@ -292,7 +292,7 @@ Downstream repositories pull the complypack artifact in their
 
 ```yaml
 complypacks:
-  - url: quay.io/complytime/complypack-ampel-branch-protection@v1.0.0
+  - url: quay.io/complytime/complypack-ampel-branch-protection:v1.0.0
     id: ampel-bp-pack
 ```
 
@@ -320,7 +320,7 @@ immutable and ensure that every consumer pulls the exact same artifact.
        id: ampel-bp-pack
    ```
 
-Tag-based pins (e.g., `@v1.0.0`) are acceptable for development because Quay
+Tag-based pins (e.g., `:v1.0.0`) are acceptable for development because Quay
 tags are immutable in this pipeline (`fail_if_dest_exists: true`). Digest pins
 provide an additional guarantee that the reference cannot be altered by
 registry-side tag mutations.
